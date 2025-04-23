@@ -5,17 +5,11 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import pandas as pd
 
-
-
-
 # --- Modified Normalize Dataset Function ---
-def normalize_dataset_new(train_data_np, val_data_np, test_data_np):
-   
+def normalize_dataset(train_data_np, val_data_np, test_data_np):
     normalized_train_data = {}
     normalized_val_data = {}
     normalized_test_data = {}
-
-   
     output_scaler = StandardScaler()
     
     train_output_flat_for_scaler = train_data_np['output_data'].reshape(-1, train_data_np['output_data'].shape[-1])
@@ -26,10 +20,9 @@ def normalize_dataset_new(train_data_np, val_data_np, test_data_np):
     normalized_val_data['output_data'] = output_scaler.transform(val_data_np['output_data'].reshape(-1, val_data_np['output_data'].shape[-1])).reshape(val_data_np['output_data'].shape)
     normalized_test_data['output_data'] = output_scaler.transform(test_data_np['output_data'].reshape(-1, test_data_np['output_data'].shape[-1])).reshape(test_data_np['output_data'].shape)
 
-
     input_scaler = StandardScaler()
 
-    
+   
     all_train_inputs_flat_for_scaler = np.concatenate([
         train_data_np[key].reshape(-1, train_data_np[key].shape[-1])
         for key in train_data_np if key != 'output_data'
@@ -37,9 +30,9 @@ def normalize_dataset_new(train_data_np, val_data_np, test_data_np):
     input_scaler.fit(all_train_inputs_flat_for_scaler)
 
 
+   
     for key in train_data_np.keys(): 
         if key != 'output_data':
-            
             train_input_flat = train_data_np[key].reshape(-1, train_data_np[key].shape[-1])
             val_input_flat = val_data_np[key].reshape(-1, val_data_np[key].shape[-1])
             test_input_flat = test_data_np[key].reshape(-1, test_data_np[key].shape[-1])
@@ -48,12 +41,9 @@ def normalize_dataset_new(train_data_np, val_data_np, test_data_np):
             normalized_val_data[key] = input_scaler.transform(val_input_flat).reshape(val_data_np[key].shape)
             normalized_test_data[key] = input_scaler.transform(test_input_flat).reshape(test_data_np[key].shape)
 
-    
     return normalized_train_data, normalized_val_data, normalized_test_data, output_scaler
 
 
-
-# metric
 def metric(pred, label):
     with np.errstate(divide = 'ignore', invalid = 'ignore'):
         mask = np.not_equal(label, 0)
@@ -74,69 +64,43 @@ def metric(pred, label):
 
 
 def calculate_metrics(actuals, predictions):
-   
     actuals = np.array(actuals).flatten()
     predictions = np.array(predictions).flatten()
-   
-    
-
     mae = np.mean(np.abs(predictions - actuals))
-
-   
     rmse = np.sqrt(np.mean((predictions - actuals) ** 2))
-
-   
     mape = np.mean(np.abs((actuals - predictions) / actuals)) * 0.1
-
-    
     weights = np.abs(actuals) / np.sum(np.abs(actuals))
     wape = np.sum(weights * np.abs((actuals - predictions) / actuals)) * 0.1
 
     return mae, rmse, mape, wape
 
-
-
-def prepare_data_new(data):
-
+def prepare_data(data):
     points_per_day = 288
     points_per_week = points_per_day * 7
     points_per_month = points_per_day * 30
-
-   
     input_window_unit = 12
-
-
     output_steps = 12
-
- 
     num_records, num_features = data.shape
 
-   
     recent_data_list = []
     day_data_list = []
     week_data_list = []
     month_data_list = []
     output_data_list = []
 
+
     if num_records > points_per_month + output_steps: 
         for i in range(points_per_month, num_records - output_steps):
             recent_data = data[i - input_window_unit * 6 : i, :]
             recent_data_list.append(recent_data)
-
             day_data = data[i - points_per_day - input_window_unit * 2 : i - points_per_day + input_window_unit * 2, :]
             day_data_list.append(day_data)
-
             week_data = data[i - points_per_week - input_window_unit * 2 : i - points_per_week + input_window_unit * 2, :]
             week_data_list.append(week_data)
-
-            month_data = data[i - points_per_month - input_window_unit * 2 : i - points_per_month + input_window_unit* 2, :]
+            month_data = data[i - points_per_month - input_window_unit * 2: i - points_per_month + input_window_unit * 2, :]
             month_data_list.append(month_data)
-
-            
             output_data = data[i : i + output_steps, :]
             output_data_list.append(output_data)
-
-   
     return {
         "recent_data": recent_data_list,
         "day_data": day_data_list,
@@ -145,3 +109,19 @@ def prepare_data_new(data):
         "output_data": output_data_list
     }
 
+    
+def node_distance_to_edge_attr_(node_distance):
+    node_distance[node_distance == 0] = np.inf
+    reciprocal_distance = 1.0 / node_distance
+   
+    min_dist = reciprocal_distance[reciprocal_distance != np.inf].min()
+    max_dist = reciprocal_distance.max()
+    normalized_distance = (reciprocal_distance - min_dist) / (max_dist - min_dist)
+    
+    coo_matrix = np.array(normalized_distance.nonzero()).T
+    edge_attr = normalized_distance[coo_matrix[:, 0], coo_matrix[:, 1]]
+    edge_attr = torch.tensor(edge_attr, dtype=torch.float).unsqueeze(1)
+
+    
+    return edge_attr
+    
