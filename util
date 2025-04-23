@@ -1,0 +1,147 @@
+import numpy as np
+import torch
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+import pandas as pd
+
+
+
+
+# --- Modified Normalize Dataset Function ---
+def normalize_dataset_new(train_data_np, val_data_np, test_data_np):
+   
+    normalized_train_data = {}
+    normalized_val_data = {}
+    normalized_test_data = {}
+
+   
+    output_scaler = StandardScaler()
+    
+    train_output_flat_for_scaler = train_data_np['output_data'].reshape(-1, train_data_np['output_data'].shape[-1])
+    output_scaler.fit(train_output_flat_for_scaler)
+
+    
+    normalized_train_data['output_data'] = output_scaler.transform(train_output_flat_for_scaler).reshape(train_data_np['output_data'].shape)
+    normalized_val_data['output_data'] = output_scaler.transform(val_data_np['output_data'].reshape(-1, val_data_np['output_data'].shape[-1])).reshape(val_data_np['output_data'].shape)
+    normalized_test_data['output_data'] = output_scaler.transform(test_data_np['output_data'].reshape(-1, test_data_np['output_data'].shape[-1])).reshape(test_data_np['output_data'].shape)
+
+
+    input_scaler = StandardScaler()
+
+    
+    all_train_inputs_flat_for_scaler = np.concatenate([
+        train_data_np[key].reshape(-1, train_data_np[key].shape[-1])
+        for key in train_data_np if key != 'output_data'
+    ], axis=0)
+    input_scaler.fit(all_train_inputs_flat_for_scaler)
+
+
+    for key in train_data_np.keys(): 
+        if key != 'output_data':
+            
+            train_input_flat = train_data_np[key].reshape(-1, train_data_np[key].shape[-1])
+            val_input_flat = val_data_np[key].reshape(-1, val_data_np[key].shape[-1])
+            test_input_flat = test_data_np[key].reshape(-1, test_data_np[key].shape[-1])
+
+            normalized_train_data[key] = input_scaler.transform(train_input_flat).reshape(train_data_np[key].shape)
+            normalized_val_data[key] = input_scaler.transform(val_input_flat).reshape(val_data_np[key].shape)
+            normalized_test_data[key] = input_scaler.transform(test_input_flat).reshape(test_data_np[key].shape)
+
+    
+    return normalized_train_data, normalized_val_data, normalized_test_data, output_scaler
+
+
+
+# metric
+def metric(pred, label):
+    with np.errstate(divide = 'ignore', invalid = 'ignore'):
+        mask = np.not_equal(label, 0)
+        mask = mask.astype(np.float32)
+        mask /= np.mean(mask)
+        mae = np.abs(np.subtract(pred, label)).astype(np.float32)
+        wape = np.divide(np.sum(mae), np.sum(label))
+        wape = np.nan_to_num(wape * mask)
+        rmse = np.square(mae)
+        mape = np.divide(mae, label)
+        mae = np.nan_to_num(mae * mask)
+        mae = np.mean(mae)
+        rmse = np.nan_to_num(rmse * mask)
+        rmse = np.sqrt(np.mean(rmse))
+        mape = np.nan_to_num(mape * mask)
+        mape = np.mean(mape)
+    return mae, rmse, mape
+
+
+def calculate_metrics(actuals, predictions):
+   
+    actuals = np.array(actuals).flatten()
+    predictions = np.array(predictions).flatten()
+   
+    
+
+    mae = np.mean(np.abs(predictions - actuals))
+
+   
+    rmse = np.sqrt(np.mean((predictions - actuals) ** 2))
+
+   
+    mape = np.mean(np.abs((actuals - predictions) / actuals)) * 0.1
+
+    
+    weights = np.abs(actuals) / np.sum(np.abs(actuals))
+    wape = np.sum(weights * np.abs((actuals - predictions) / actuals)) * 0.1
+
+    return mae, rmse, mape, wape
+
+
+
+def prepare_data_new(data):
+
+    points_per_day = 288
+    points_per_week = points_per_day * 7
+    points_per_month = points_per_day * 30
+
+   
+    input_window_unit = 12
+
+
+    output_steps = 12
+
+ 
+    num_records, num_features = data.shape
+
+   
+    recent_data_list = []
+    day_data_list = []
+    week_data_list = []
+    month_data_list = []
+    output_data_list = []
+
+    if num_records > points_per_month + output_steps: 
+        for i in range(points_per_month, num_records - output_steps):
+            recent_data = data[i - input_window_unit * 6 : i, :]
+            recent_data_list.append(recent_data)
+
+            day_data = data[i - points_per_day - input_window_unit * 2 : i - points_per_day + input_window_unit * 2, :]
+            day_data_list.append(day_data)
+
+            week_data = data[i - points_per_week - input_window_unit * 2 : i - points_per_week + input_window_unit * 2, :]
+            week_data_list.append(week_data)
+
+            month_data = data[i - points_per_month - input_window_unit * 2 : i - points_per_month + input_window_unit* 2, :]
+            month_data_list.append(month_data)
+
+            
+            output_data = data[i : i + output_steps, :]
+            output_data_list.append(output_data)
+
+   
+    return {
+        "recent_data": recent_data_list,
+        "day_data": day_data_list,
+        "week_data": week_data_list,
+        "month_data": month_data_list,
+        "output_data": output_data_list
+    }
+
