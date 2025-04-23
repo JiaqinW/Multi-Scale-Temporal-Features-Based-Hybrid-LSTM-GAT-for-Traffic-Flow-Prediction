@@ -1,0 +1,39 @@
+import torch
+from torch import nn
+from torch_geometric.nn import GATConv
+
+class LSTMEncoder(nn.Module):
+    def __init__(self, args):
+        super(LSTMEncoder, self).__init__()
+        self.lstm = nn.LSTM(args.input_dim, args.hidden_dim, args.num_layers, batch_first=True)
+        self.args = args
+        self.leaky_relu = torch.nn.LeakyReLU(0.1)
+
+    def forward(self, x): 
+        x = x.permute(0, 2, 1) 
+        x = x.view(self.args.batch_size, self.args.num_nodes, self.args.num_fea, x.shape[-1]).contiguous() 
+        x = x.view(-1, x.shape[-2], x.shape[-1]) 
+        x = x.permute(0, 2, 1) 
+        output, (hidden, cell) = self.lstm(x)
+        hidden=self.leaky_relu(hidden)
+        return hidden[-1] 
+
+
+
+class LSTMDecoderWithLinear(nn.Module):
+    def __init__(self, args):
+        super(LSTMDecoderWithLinear, self).__init__()
+        self.gat = GATConv(args.hidden_dim*4, args.out_channels, heads=args.num_heads)
+        self.lstm = nn.LSTM(args.out_channels*args.num_heads, args.decoderout * args.out_length, args.decoder_num_layers, batch_first=True)
+        self.linear = nn.Linear(args.decoderout, args.output_dim)
+        self.args = args
+        self.leaky_relu = torch.nn.LeakyReLU(0.1)
+
+    def forward(self, x, edge_index_device, edge_attr_device):
+        gat_output = self.gat(x, edge_index_device)
+        gat_output = self.leaky_relu(gat_output).view(self.args.batch_size, self.args.num_nodes, self.args.out_channels*self.args.num_heads)
+        lstm_out, (hidden, cell) = self.lstm(gat_output)
+        lstm_out = self.leaky_relu(lstm_out).view(lstm_out.shape[0], lstm_out.shape[1], self.args.out_length, self.args.decoderout)
+        output = self.linear(lstm_out)
+        return output.permute(0, 2, 1, 3)
+
