@@ -3,44 +3,45 @@ import torch
 import pickle
 from itertools import chain
 from torch import nn
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import TensorDataset, DataLoader, ConcatDataset 
 from sklearn.model_selection import train_test_split 
 from sklearn.preprocessing import StandardScaler
-from util_new import prepare_data_new, normalize_dataset_new, calculate_metrics, metric
-from model_new import LSTMEncoder, LSTMDecoderWithLinear
+from util import prepare_data, node_distance_to_edge_attr, normalize_dataset, calculate_metrics, metric
+from model import LSTMEncoder, SimpleModel, LSTMDecoderWithLinear
+import time
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import math
 import pandas as pd
 import os 
 
-
-data_raw = np.load('./data/PEMS08/PEMS08_updated_data_per.npz')['data'] 
+data_raw = np.load('./data/PEMS08/PEMS08_updated_data.npz')['data'] 
 data = data_raw.reshape(data_raw.shape[0], -1) 
-
+with open('./data/PEMS08/adj_PEMS08_distance.pkl', "rb") as f:
+    node_distance = pickle.load(f)
+edge_attr = node_distance_to_edge_attr_(node_distance)
 file_path = './data/PEMS08/adj_PEMS08.pkl'
 with open(file_path, 'rb') as file:
     data_adj = pickle.load(file)
 edge_index = torch.nonzero(torch.tensor(data_adj), as_tuple=False).t()
 
-
 class Config:
     def __init__(self):
-        self.seed = 26 
+        self.seed = 26
         self.prediction_size = 12 
-        self.batch_size = 128
+        self.batch_size = 128 
         self.num_nodes = data_raw.shape[1]
         self.num_fea = data_raw.shape[-1] 
-        self.num_heads = 4
+        self.num_heads = 4 
         self.input_dim = data_raw.shape[-1] 
-        self.hidden_dim = 32
+        self.hidden_dim = 32 
         self.num_layers = 1  
         self.output_dim = 3 
-        self.out_channels=56 
+        self.out_channels=20
         self.decoder_num_layers=1 
         self.decoderout=20 
         self.out_length=12 
-        self.num_epochs = 1 
-        self.learning_rate = 0.001 
+        self.num_epochs = 1  
+        self.learning_rate = 0.001  
         self.checkpoint_dir = './checkpoints' # Directory to save model checkpoints
 args = Config()
 
@@ -50,18 +51,12 @@ if torch.cuda.is_available():
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 np.random.seed(args.seed)
-
 torch.set_default_dtype(torch.float32)
-
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device = torch.device("cpu")
-
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
-
 
 processed_data = prepare_data_new(data) 
 total_length = len(processed_data['output_data'])
-
 train_ratio = 0.7
 val_ratio = 0.1
 test_ratio = 0.2 
@@ -69,7 +64,6 @@ test_ratio = 0.2
 train_length = int(total_length * train_ratio)
 val_length = int(total_length * val_ratio)
 test_length = total_length - train_length - val_length 
-
 train_idx = list(range(0, train_length))
 val_idx = list(range(train_length, train_length + val_length))
 test_idx = list(range(train_length + val_length, total_length))
@@ -79,187 +73,131 @@ print(f"Train sequences: {train_length}")
 print(f"Validation sequences: {val_length}")
 print(f"Test sequences: {test_length}")
 
-
 train_data_raw = {k: [v[i] for i in train_idx] for k, v in processed_data.items()}
 val_data_raw = {k: [v[i] for i in val_idx] for k, v in processed_data.items()}
 test_data_raw = {k: [v[i] for i in test_idx] for k, v in processed_data.items()}
-
 train_data_np = {k: np.array(v) for k, v in train_data_raw.items()}
 val_data_np = {k: np.array(v) for k, v in val_data_raw.items()}
 test_data_np = {k: np.array(v) for k, v in test_data_raw.items()}
 
-
 train_data, val_data, test_data, scaler = normalize_dataset_new(train_data_np, val_data_np, test_data_np)
-
-
 X_train_tensor_list = [
     torch.tensor(train_data['recent_data'], dtype=torch.float32),
     torch.tensor(train_data['day_data'], dtype=torch.float32),
     torch.tensor(train_data['week_data'], dtype=torch.float32),
-    torch.tensor(train_data['month_data'], dtype=torch.float32)
-]
+    torch.tensor(train_data['month_data'], dtype=torch.float32)]
 X_val_tensor_list = [
     torch.tensor(val_data['recent_data'], dtype=torch.float32),
     torch.tensor(val_data['day_data'], dtype=torch.float32),
     torch.tensor(val_data['week_data'], dtype=torch.float32),
-    torch.tensor(val_data['month_data'], dtype=torch.float32)
-]
+    torch.tensor(val_data['month_data'], dtype=torch.float32)]
 X_test_tensor_list = [
     torch.tensor(test_data['recent_data'], dtype=torch.float32),
     torch.tensor(test_data['day_data'], dtype=torch.float32),
     torch.tensor(test_data['week_data'], dtype=torch.float32),
-    torch.tensor(test_data['month_data'], dtype=torch.float32)
-]
+    torch.tensor(test_data['month_data'], dtype=torch.float32)]
 
 Y_train_tensor = torch.tensor(train_data["output_data"], dtype=torch.float32)
 Y_val_tensor = torch.tensor(val_data["output_data"], dtype=torch.float32)
 Y_test_tensor = torch.tensor(test_data["output_data"], dtype=torch.float32)
 
-
 train_dataset_list = [
     TensorDataset(x_tensor, Y_train_tensor)
-    for x_tensor in X_train_tensor_list
-]
-
-val_dataset_list = [
-    TensorDataset(x_tensor, Y_val_tensor)
-    for x_tensor in X_val_tensor_list
-]
-
-test_dataset_list = [
-    TensorDataset(x_tensor, Y_test_tensor)
-    for x_tensor in X_test_tensor_list
-]
-
-
-train_loader_list = [
-    DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True)
-    for train_dataset in train_dataset_list
-]
-
-val_loader_list = [
-    DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True)
-    for val_dataset in val_dataset_list
-]
-
-test_loader_list = [
-    DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True)
-    for test_dataset in test_dataset_list
-]
-
+    for x_tensor in X_train_tensor_list]
+val_dataset_list = [TensorDataset(x_tensor, Y_val_tensor)
+    for x_tensor in X_val_tensor_list]
+test_dataset_list = [TensorDataset(x_tensor, Y_test_tensor)
+    for x_tensor in X_test_tensor_list]
+train_loader_list = [DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True)
+    for train_dataset in train_dataset_list]
+val_loader_list = [DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True)
+    for val_dataset in val_dataset_list]
+test_loader_list = [DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True)
+    for test_dataset in test_dataset_list]
 
 encoder1 = LSTMEncoder(args) 
-encoder2 = LSTMEncoder(args) 
+encoder2 = LSTMEncoder(args)
 encoder3 = LSTMEncoder(args) 
 encoder4 = LSTMEncoder(args) 
+encoder5 = SimpleModel(args) 
 decoder = LSTMDecoderWithLinear(args)
-
-
-encoder_list = [encoder1, encoder2, encoder3, encoder4]
-model_list = encoder_list + [decoder] 
-
+encoder_list = [encoder1, encoder2, encoder3, encoder4, encoder5]
+model_list = encoder_list + [decoder]
 for model in model_list:
     model.to(device)
 data_adj_device = torch.tensor(data_adj).float().to(device)
 edge_index_device = edge_index.to(device)
-
+edge_attr_device = edge_attr.to(device)
 criterion = nn.MSELoss()
-
 combined_params = chain(encoder1.parameters(), encoder2.parameters(),
                         encoder3.parameters(), encoder4.parameters(),
-                        decoder.parameters())
-
-
+                        encoder5.parameters(), decoder.parameters())
 optimizer = torch.optim.Adam(combined_params, lr=args.learning_rate)
-
-
-
 train_loss_list = []
 val_loss_list = [] 
-
-
 best_val_loss = float('inf') 
 best_model_path = os.path.join(args.checkpoint_dir, 'best_traffic_model.pth')
-
 if not os.path.exists(args.checkpoint_dir):
     os.makedirs(args.checkpoint_dir)
     print(f"Created checkpoint directory: {args.checkpoint_dir}")
 
 print("Starting training...")
-
 for epoch in range(args.num_epochs):
-
-
     for model in model_list:
         model.train()
-
     epoch_train_loss = 0.0 
     num_train_batches = 0
-
-    
     for batch_idx, (data1, data2, data3, data4) in enumerate(
             zip(train_loader_list[0], train_loader_list[1], train_loader_list[2], train_loader_list[3])):
-
         data_device_list = [
             [data1[0].to(device), data1[1].to(device)], 
             [data2[0].to(device), data2[1].to(device)], 
             [data3[0].to(device), data3[1].to(device)], 
-            [data4[0].to(device), data4[1].to(device)]  
-        ]
-
+            [data4[0].to(device), data4[1].to(device)] ]
         optimizer.zero_grad()
-
         output1 = encoder1(data_device_list[0][0]) 
         output2 = encoder2(data_device_list[1][0]) 
         output3 = encoder3(data_device_list[2][0]) 
-        output4 = encoder4(data_device_list[3][0]) 
-        output = torch.cat((output1, output2, output3, output4), dim=-1)
-        prediction_train = decoder(output, edge_index_device)
+        output4 = encoder4(data_device_list[3][0])
+        output5 = encoder5(data_adj_device) 
+        output5_repeated = output5.repeat(data_device_list[0][0].size(0), 1)
+        output = torch.cat((output1, output2, output3, output4, output5_repeated), dim=-1)
+        prediction_train = decoder(output, edge_index_device, edge_attr_device)
         label_flat = data_device_list[0][1].reshape(prediction_train.shape).to(device) 
         loss = criterion(prediction_train, label_flat)
         loss.backward()
         optimizer.step()
         epoch_train_loss += loss.item()
         num_train_batches += 1
-
     avg_train_loss = epoch_train_loss / num_train_batches if num_train_batches > 0 else 0.0
     train_loss_list.append(avg_train_loss)
-
-    
     print(f'Epoch {epoch + 1}/{args.num_epochs}, Avg Train Loss: {avg_train_loss:.6f}')
 
     print(f'Starting validation for Epoch {epoch + 1}...')
     for model in model_list:
         model.eval()
-
     val_loss = 0.0
     num_val_batches = 0
-
     with torch.no_grad(): 
         for batch_idx_val, (data1_val, data2_val, data3_val, data4_val) in enumerate(
             zip(val_loader_list[0], val_loader_list[1], val_loader_list[2], val_loader_list[3])):
-
             data_device_list_val = [
                 [data1_val[0].to(device), data1_val[1].to(device)], 
                 [data2_val[0].to(device), data2_val[1].to(device)], 
                 [data3_val[0].to(device), data3_val[1].to(device)], 
-                [data4_val[0].to(device), data4_val[1].to(device)] 
-            ]
-
+                [data4_val[0].to(device), data4_val[1].to(device)] ]
             output1_val = encoder1(data_device_list_val[0][0])
             output2_val = encoder2(data_device_list_val[1][0])
             output3_val = encoder3(data_device_list_val[2][0])
             output4_val = encoder4(data_device_list_val[3][0])
-           
-            output_val = torch.cat((output1_val, output2_val, output3_val, output4_val), dim=-1)
-            prediction_val = decoder(output_val, edge_index_device)
-            label_flat_val = data_device_list_val[0][1].reshape(prediction_val.shape).to(device) 
-
+            output5_val = encoder5(data_adj_device)
+            output5_repeated_val = output5_val.repeat(data_device_list_val[0][0].size(0), 1)
+            output_val = torch.cat((output1_val, output2_val, output3_val, output4_val, output5_repeated_val), dim=-1)
+            prediction_val = decoder(output_val, edge_index_device, edge_attr_device)
+            label_flat_val = data_device_list_val[0][1].reshape(prediction_val.shape).to(device)
             loss_val = criterion(prediction_val, label_flat_val)
-
             val_loss += loss_val.item()
             num_val_batches += 1
-
     avg_val_loss = val_loss / num_val_batches if num_val_batches > 0 else float('inf')
     val_loss_list.append(avg_val_loss) 
     print(f'Epoch {epoch + 1}, Avg Validation Loss: {avg_val_loss:.6f}')
@@ -274,11 +212,10 @@ for epoch in range(args.num_epochs):
             'encoder4_state_dict': encoder4.state_dict(),
             'decoder_state_dict': decoder.state_dict(),
             'best_val_loss': best_val_loss,
-            'epoch': epoch,
-        }
-        
+            'epoch': epoch,}
+        if encoder5 is not None:
+             save_dict['encoder5_state_dict'] = encoder5.state_dict()
         torch.save(save_dict, best_model_path)
-
 print(f'\nLoading best model from {best_model_path} for testing...')
 
 if os.path.exists(best_model_path):
@@ -287,81 +224,56 @@ if os.path.exists(best_model_path):
     encoder2.load_state_dict(checkpoint['encoder2_state_dict'])
     encoder3.load_state_dict(checkpoint['encoder3_state_dict'])
     encoder4.load_state_dict(checkpoint['encoder4_state_dict'])
-    decoder.load_state_dict(checkpoint['decoder_state_dict'])
-    
+    decoder.load_state_dict(checkpoint['decoder_state_dict'])  
+    if 'encoder5_state_dict' in checkpoint and encoder5 is not None:
+         encoder5.load_state_dict(checkpoint['encoder5_state_dict'])
     print(f"Loaded model from epoch {checkpoint.get('epoch', 'N/A')} with validation loss {checkpoint.get('best_val_loss', float('inf')):.6f}")
 else:
     print(f"Error: Best model not found at {best_model_path}! Testing with the model from the last training epoch.")
-
 for model in model_list:
     model.eval()
-
 prediction_list = []
 label_list = []
-
 print("Starting testing...")
 with torch.no_grad(): 
     for batch_idx, (data1, data2, data3, data4) in enumerate(
             zip(test_loader_list[0], test_loader_list[1], test_loader_list[2], test_loader_list[3])):
-
         data_device_list_test = [
             [data1[0].to(device), data1[1].to(device)], 
             [data2[0].to(device), data2[1].to(device)], 
-            [data3[0].to(device), data3[1].to(device)],
-            [data4[0].to(device), data4[1].to(device)] 
-        ]
+            [data3[0].to(device), data3[1].to(device)], 
+            [data4[0].to(device), data4[1].to(device)] ]
         output1 = encoder1(data_device_list_test[0][0])
         output2 = encoder2(data_device_list_test[1][0])
         output3 = encoder3(data_device_list_test[2][0])
         output4 = encoder4(data_device_list_test[3][0])
-    
-        output = torch.cat((output1, output2, output3, output4), dim=-1)
-        prediction_test = decoder(output, edge_index_device)
+        output5 = encoder5(data_adj_device)
+        output5_repeated = output5.repeat(data_device_list_test[0][0].size(0), 1)
+        output = torch.cat((output1, output2, output3, output4, output5_repeated), dim=-1)
+        prediction_test = decoder(output, edge_index_device, edge_attr_device)
         prediction_list.append(prediction_test.cpu())
         label_list.append(data_device_list_test[0][1].reshape(prediction_test.shape).cpu())
 
-
-prediction_concat = torch.cat(prediction_list, dim=0).numpy()
+prediction_concat = torch.cat(prediction_list, dim=0).numpy() 
 label_concat = torch.cat(label_list, dim=0).numpy() 
-
 num_seq = prediction_concat.shape[0]
-
-
-prediction_flat = prediction_concat.reshape(
-    -1,
-    args.num_nodes * args.num_fea
-)  
-label_flat = label_concat.reshape(
-    -1,
-    args.num_nodes * args.num_fea
-)  
-
+prediction_flat = prediction_concat.reshape(-1,args.num_nodes * args.num_fea)  
+label_flat = label_concat.reshape(-1,args.num_nodes * args.num_fea) 
 prediction_inv_flat = scaler.inverse_transform(prediction_flat)
 label_inv_flat = scaler.inverse_transform(label_flat)
-
-
 prediction_concat_inv_reshaped = prediction_inv_flat.reshape(
     num_seq,
     args.prediction_size,
     args.num_nodes,
-    args.num_fea
-)
+    args.num_fea)
 label_concat_inv_reshaped = label_inv_flat.reshape(
     num_seq,
     args.prediction_size,
     args.num_nodes,
-    args.num_fea
-)
-
-
-
-
+    args.num_fea)
 print("\nCalculating metrics...")
-
 pred_flow = prediction_concat_inv_reshaped[:, :, :, 0] 
-label_flow = label_concat_inv_reshaped[:, :, :, 0]   
-
-
+label_flow = label_concat_inv_reshaped[:, :, :, 0]  
 maes = []
 rmses = []
 mapes = []
@@ -372,21 +284,15 @@ for i in range(args.prediction_size):
     pred_step = pred_flow[:, i, :].flatten() 
     label_step = label_flow[:, i, :].flatten() 
     step_mae, step_rmse, step_mape, step_wape = calculate_metrics(pred_step.tolist(), label_step.tolist())
-
     maes.append(step_mae)
     rmses.append(step_rmse)
     mapes.append(step_mape)
     wapes.append(step_wape)
-
     print(f'Step {i+1}/{args.prediction_size} | MAE: {step_mae:.4f}, RMSE: {step_rmse:.4f}, MAPE: {step_mape:.4f}, WAPE: {step_wape:.4f}')
-
 pred_flow_all = pred_flow.flatten()
 label_flow_all = label_flow.flatten()
-
 avg_mae, avg_rmse, avg_mape, avg_wape = calculate_metrics(pred_flow_all.tolist(), label_flow_all.tolist())
-
 print("\nAverage metrics over all steps and data:")
 print(f'Average MAE: {avg_mae:.4f}',f'Average RMSE: {avg_rmse:.4f}',f'Average MAPE: {avg_mape:.4f}',f'Average WAPE: {avg_wape:.4f}')
-
 
 
